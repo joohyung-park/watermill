@@ -22,14 +22,17 @@ import (
 )
 
 func main() {
-	db, err := stdSQL.Open("postgres", "postgres://watermill:password@postgres:5432/watermill?sslmode=disable")
+	rawdb, err := stdSQL.Open("postgres", "postgres://postgres:postgres@172.24.0.3:5432/watermill?sslmode=disable")
 	if err != nil {
 		panic(err)
+	}
+	db := sql.StdSQLBeginner{
+		SQLBeginner: rawdb,
 	}
 
 	logger := watermill.NewStdLogger(false, false)
 
-	redisClient := redis.NewClient(&redis.Options{Addr: "redis:6379"})
+	redisClient := redis.NewClient(&redis.Options{Addr: "172.17.0.3:6379"})
 	marshaler := cqrs.JSONMarshaler{
 		GenerateName: cqrs.StructName,
 	}

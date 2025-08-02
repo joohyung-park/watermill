@@ -1,6 +1,8 @@
 module github.com/ThreeDotsLabs/watermill
 
-go 1.21
+go 1.24.1
+
+toolchain go1.24.2
 
 require (
 	github.com/cenkalti/backoff/v3 v3.2.2
@@ -13,7 +15,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.20.2
 	github.com/sony/gobreaker v1.0.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	google.golang.org/protobuf v1.34.2
 )
 
@@ -24,6 +26,7 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/on-the-ground/effect_ive_go v0.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
