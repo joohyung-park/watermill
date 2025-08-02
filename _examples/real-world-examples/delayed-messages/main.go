@@ -10,6 +10,7 @@ import (
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+	"github.com/on-the-ground/effect_ive_go/effects/dependency"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ThreeDotsLabs/watermill"
@@ -21,31 +22,27 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 )
 
-func main() {
-	rawdb, err := stdSQL.Open("postgres", "postgres://postgres:postgres@172.24.0.3:5432/watermill?sslmode=disable")
-	if err != nil {
-		panic(err)
-	}
-	db := sql.StdSQLBeginner{
-		SQLBeginner: rawdb,
-	}
+func prepareEventHandler(router *message.Router) {
+	eventProcessor, err := cqrs.NewEventProcessorWithConfig(router, cqrs.EventProcessorConfig{
+		GenerateSubscribeTopic: func(params cqrs.EventProcessorGenerateSubscribeTopicParams) (string, error) {
+			return params.EventName, nil
+		},
+		SubscriberConstructor: func(params cqrs.EventProcessorSubscriberConstructorParams) (message.Subscriber, error) {
 
-	logger := watermill.NewStdLogger(false, false)
-
-	redisClient := redis.NewClient(&redis.Options{Addr: "172.17.0.3:6379"})
-	marshaler := cqrs.JSONMarshaler{
-		GenerateName: cqrs.StructName,
-	}
-
-	redisPublisher, err := redisstream.NewPublisher(redisstream.PublisherConfig{
-		Client: redisClient,
-	}, logger)
+			return redisstream.NewSubscriber(redisstream.SubscriberConfig{
+				Client:        redisClient,
+				ConsumerGroup: params.HandlerName,
+			}, logger)
+		},
+		Marshaler: marshaler,
+		Logger:    logger,
+	})
 	if err != nil {
 		panic(err)
 	}
 
 	var sqlPublisher message.Publisher
-	sqlPublisher, err = sql.NewDelayedPostgreSQLPublisher(db, sql.DelayedPostgreSQLPublisherConfig{
+	sqlPublisher, err = sql.NewDelayedPostgreSQLPublisher(sqlClient, sql.DelayedPostgreSQLPublisherConfig{
 		DelayPublisherConfig: delay.PublisherConfig{},
 		Logger:               logger,
 	})
@@ -57,56 +54,9 @@ func main() {
 		ForwarderTopic: "forwarder",
 	})
 
-	eventBus, err := cqrs.NewEventBusWithConfig(redisPublisher, cqrs.EventBusConfig{
-		GeneratePublishTopic: func(params cqrs.GenerateEventPublishTopicParams) (string, error) {
-			return params.EventName, nil
-		},
-		Marshaler: marshaler,
-		Logger:    logger,
-	})
-	if err != nil {
-		panic(err)
-	}
-
 	commandBus, err := cqrs.NewCommandBusWithConfig(sqlPublisher, cqrs.CommandBusConfig{
 		GeneratePublishTopic: func(params cqrs.CommandBusGeneratePublishTopicParams) (string, error) {
 			return params.CommandName, nil
-		},
-		Marshaler: marshaler,
-		Logger:    logger,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	router := message.NewDefaultRouter(logger)
-
-	eventProcessor, err := cqrs.NewEventProcessorWithConfig(router, cqrs.EventProcessorConfig{
-		GenerateSubscribeTopic: func(params cqrs.EventProcessorGenerateSubscribeTopicParams) (string, error) {
-			return params.EventName, nil
-		},
-		SubscriberConstructor: func(params cqrs.EventProcessorSubscriberConstructorParams) (message.Subscriber, error) {
-			return redisstream.NewSubscriber(redisstream.SubscriberConfig{
-				Client:        redisClient,
-				ConsumerGroup: params.HandlerName,
-			}, logger)
-		},
-		Marshaler: marshaler,
-		Logger:    logger,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	commandProcessor, err := cqrs.NewCommandProcessorWithConfig(router, cqrs.CommandProcessorConfig{
-		GenerateSubscribeTopic: func(params cqrs.CommandProcessorGenerateSubscribeTopicParams) (string, error) {
-			return params.CommandName, nil
-		},
-		SubscriberConstructor: func(params cqrs.CommandProcessorSubscriberConstructorParams) (message.Subscriber, error) {
-			return redisstream.NewSubscriber(redisstream.SubscriberConfig{
-				Client:        redisClient,
-				ConsumerGroup: params.HandlerName,
-			}, logger)
 		},
 		Marshaler: marshaler,
 		Logger:    logger,
@@ -142,6 +92,26 @@ func main() {
 		panic(err)
 	}
 
+}
+
+func prepareCommandHandler(router *message.Router) {
+	commandProcessor, err := cqrs.NewCommandProcessorWithConfig(router, cqrs.CommandProcessorConfig{
+		GenerateSubscribeTopic: func(params cqrs.CommandProcessorGenerateSubscribeTopicParams) (string, error) {
+			return params.CommandName, nil
+		},
+		SubscriberConstructor: func(params cqrs.CommandProcessorSubscriberConstructorParams) (message.Subscriber, error) {
+			return redisstream.NewSubscriber(redisstream.SubscriberConfig{
+				Client:        redisClient,
+				ConsumerGroup: params.HandlerName,
+			}, logger)
+		},
+		Marshaler: marshaler,
+		Logger:    logger,
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	err = commandProcessor.AddHandlers(
 		cqrs.NewCommandHandler(
 			"OnSendFeedbackForm",
@@ -157,8 +127,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
 
-	sqlSubscriber, err := sql.NewDelayedPostgreSQLSubscriber(db, sql.DelayedPostgreSQLSubscriberConfig{
+func prepareForwarder(router *message.Router) {
+	redisPublisher, err := redisstream.NewPublisher(redisstream.PublisherConfig{
+		Client: redisClient,
+	}, logger)
+	if err != nil {
+		panic(err)
+	}
+
+	sqlSubscriber, err := sql.NewDelayedPostgreSQLSubscriber(sqlClient, sql.DelayedPostgreSQLSubscriberConfig{
 		DeleteOnAck: true,
 		Logger:      logger,
 	})
@@ -178,6 +157,34 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func main() {
+	ctx := context.Background()
+
+	dependencies := []any{}
+
+	ctx, endOfDependency := dependency.WithEffectHandler(ctx, 3, dependencies)
+	defer endOfDependency()
+
+	rawdb, err := stdSQL.Open("postgres", "postgres://postgres:postgres@172.24.0.3:5432/watermill?sslmode=disable")
+	if err != nil {
+		panic(err)
+	}
+	sqlClient := sql.StdSQLBeginner{
+		SQLBeginner: rawdb,
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: "172.17.0.3:6379"})
+	marshaler := cqrs.JSONMarshaler{
+		GenerateName: cqrs.StructName,
+	}
+	logger := watermill.NewStdLogger(false, false)
+
+	router := message.NewDefaultRouter(logger)
+
+	prepareForwarder(router)
+	prepareEventHandler(router)
+	prepareCommandHandler(router)
 
 	go func() {
 		err = router.Run(context.Background())
@@ -187,6 +194,17 @@ func main() {
 	}()
 
 	<-router.Running()
+
+	eventBus, err := cqrs.NewEventBusWithConfig(redisPublisher, cqrs.EventBusConfig{
+		GeneratePublishTopic: func(params cqrs.GenerateEventPublishTopicParams) (string, error) {
+			return params.EventName, nil
+		},
+		Marshaler: marshaler,
+		Logger:    logger,
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	for {
 		name := gofakeit.FirstName()
