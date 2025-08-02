@@ -1,0 +1,24 @@
+# for Watermill development purposes.
+# For Watermill based application docker please check https://watermill.io/docs/getting-started/
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command: [ "--max_connections=50000" ]
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_DATABASE: watermill
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+
+  postgres:
+    image: postgres:15.3
+    restart: unless-stopped
+    command: postgres -c 'max_connections=50000'
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: watermill
+      POSTGRES_DB: watermill
+      POSTGRES_PASSWORD: "password"

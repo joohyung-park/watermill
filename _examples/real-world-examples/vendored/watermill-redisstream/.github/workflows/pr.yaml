@@ -1,0 +1,6 @@
+name: pr
+on:
+  pull_request:
+jobs:
+  ci:
+    uses: ThreeDotsLabs/watermill/.github/workflows/tests.yml@master
