@@ -8,6 +8,8 @@ import (
 	"github.com/Rican7/retry"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/on-the-ground/effect_ive_go/effects/dependency"
+	"github.com/on-the-ground/effect_ive_go/effects/log"
 	"github.com/pkg/errors"
 	"github.com/redis/go-redis/v9"
 )
@@ -35,8 +37,6 @@ const (
 
 type Subscriber struct {
 	config        SubscriberConfig
-	client        redis.UniversalClient
-	logger        watermill.LoggerAdapter
 	closing       chan struct{}
 	subscribersWg sync.WaitGroup
 
@@ -57,16 +57,13 @@ func NewSubscriber(config SubscriberConfig, logger watermill.LoggerAdapter) (*Su
 	}
 
 	return &Subscriber{
-		config:  config,
-		client:  config.Client,
-		logger:  logger,
+		config: config,
+
 		closing: make(chan struct{}),
 	}, nil
 }
 
 type SubscriberConfig struct {
-	Client redis.UniversalClient
-
 	Unmarshaller Unmarshaller
 
 	// Redis stream consumer id, paired with ConsumerGroup.
@@ -160,9 +157,6 @@ func (sc *SubscriberConfig) setDefaults() {
 }
 
 func (sc *SubscriberConfig) Validate() error {
-	if sc.Client == nil {
-		return errors.New("redis client is empty")
-	}
 	return nil
 }
 
@@ -179,7 +173,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messa
 		"consumer_group": s.config.ConsumerGroup,
 		"consumer_uuid":  s.config.Consumer,
 	}
-	s.logger.Info("Subscribing to redis stream topic", logFields)
+	log.Effect(ctx, log.LogInfo, "Subscribing to redis stream topic", logFields)
 
 	// we don't want to have buffered channel to not consume messsage from redis stream when consumer is not consuming
 	output := make(chan *message.Message)
@@ -200,13 +194,13 @@ func (s *Subscriber) Subscribe(ctx context.Context, topic string) (<-chan *messa
 }
 
 func (s *Subscriber) consumeMessages(ctx context.Context, topic string, output chan *message.Message, logFields watermill.LogFields) (consumeMessageClosed chan struct{}, err error) {
-	s.logger.Info("Starting consuming", logFields)
+	log.Effect(ctx, log.LogInfo, "Starting consuming", logFields)
 
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		select {
 		case <-s.closing:
-			s.logger.Debug("Closing subscriber, cancelling consumeMessages", logFields)
+			log.Effect(ctx, log.LogDebug, "Closing subscriber, cancelling consumeMessages", logFields)
 			cancel()
 		case <-ctx.Done():
 			// avoid goroutine leak
@@ -221,7 +215,7 @@ func (s *Subscriber) consumeMessages(ctx context.Context, topic string, output c
 
 	consumeMessageClosed, err = s.consumeStreams(ctx, topic, output, logFields)
 	if err != nil {
-		s.logger.Debug(
+		log.Effect(ctx, log.LogDebug,
 			"Starting consume failed, cancelling context",
 			logFields.Add(watermill.LogFields{"err": err}),
 		)
@@ -246,18 +240,18 @@ func (s *Subscriber) consumeStreams(ctx context.Context, stream string, output c
 			select {
 			case xs := <-readChannel:
 				if xs == nil {
-					s.logger.Debug("readStreamChannel is closed, stopping readStream", logFields)
+					log.Effect(ctx, log.LogDebug, "readStreamChannel is closed, stopping readStream", logFields)
 					return
 				}
 				if err := messageHandler.processMessage(ctx, xs.Stream, &xs.Messages[0], logFields); err != nil {
-					s.logger.Error("processMessage fail", err, logFields)
+					log.Effect(ctx, log.LogError, "processMessage fail", watermill.LogFields{"error": err}.Add(logFields))
 					return
 				}
 			case <-s.closing:
-				s.logger.Debug("Subscriber is closing, stopping readStream", logFields)
+				log.Effect(ctx, log.LogDebug, "Subscriber is closing, stopping readStream", logFields)
 				return
 			case <-ctx.Done():
-				s.logger.Debug("Ctx was cancelled, stopping readStream", logFields)
+				log.Effect(ctx, log.LogDebug, "Ctx was cancelled, stopping readStream", logFields)
 				return
 			}
 		}
@@ -331,13 +325,13 @@ func (s *Subscriber) read(ctx context.Context, stream string, readChannel chan<-
 			} else if err != nil {
 				if s.config.ShouldStopOnReadErrors != nil {
 					if s.config.ShouldStopOnReadErrors(err) {
-						s.logger.Error("stop reading after error", err, logFields)
+						log.Effect(ctx, log.LogError, "stop reading after error", watermill.LogFields{"error": err}.Add(logFields))
 						return
 					}
 				}
 				// prevent excessive output from abnormal connections
 				time.Sleep(500 * time.Millisecond)
-				s.logger.Error("read fail", err, logFields)
+				log.Effect(ctx, log.LogError, "read fail", watermill.LogFields{"error": err}.Add(logFields))
 			}
 			if len(xss) < 1 || len(xss[0].Messages) < 1 {
 				continue
@@ -400,10 +394,9 @@ OUTER_LOOP:
 			Count:  s.config.ClaimBatchSize,
 		}).Result()
 		if err != nil {
-			s.logger.Error(
+			log.Effect(ctx, log.LogError,
 				"xpendingext fail",
-				err,
-				logFields,
+				watermill.LogFields{"error": err}.Add(logFields),
 			)
 			continue
 		}
@@ -426,13 +419,20 @@ OUTER_LOOP:
 				}).Result()
 				if err == redis.Nil {
 					// Any messages that are nil, should be xacked and skipped
-					s.client.XAck(ctx, stream, s.config.ConsumerGroup, xp.ID)
+					<-dependency.Effect[_redisClient](ctx, XAckEffect{
+						ctx:    ctx,
+						stream: stream,
+						group:  s.config.ConsumerGroup,
+						ids:    []string{xp.ID},
+					})
+
 					continue
 				} else if err != nil {
-					s.logger.Error(
+					log.Effect(ctx, log.LogError,
 						"xclaim fail",
-						err,
-						logFields.Add(watermill.LogFields{"xp": xp}),
+						watermill.LogFields{"error": err}.
+							Add(logFields).
+							Add(watermill.LogFields{"xp": xp}),
 					)
 					continue OUTER_LOOP
 				}
@@ -473,24 +473,25 @@ func (s *Subscriber) checkConsumers(ctx context.Context, stream string, wg *sync
 		}
 		xics, err := s.client.XInfoConsumers(ctx, stream, s.config.ConsumerGroup).Result()
 		if err != nil {
-			s.logger.Error(
+			log.Effect(ctx, log.LogError,
 				"xinfoconsumers failed",
-				err,
-				logFields,
+				watermill.LogFields{"error": err}.Add(logFields),
 			)
 		}
 		for _, xic := range xics {
-			if xic.Idle < s.config.ConsumerTimeout {
+			if xic.Idle < s.config.ConsumerTimeout || xic.Pending != 0 {
 				continue
 			}
-			if xic.Pending == 0 {
-				if err = s.client.XGroupDelConsumer(ctx, stream, s.config.ConsumerGroup, xic.Name).Err(); err != nil {
-					s.logger.Error(
-						"xgroupdelconsumer failed",
-						err,
-						logFields,
-					)
-				}
+			if res := <-dependency.Effect[_redisClient](ctx, XGroupDelConsumerEffect{
+				ctx:      ctx,
+				stream:   stream,
+				group:    s.config.ConsumerGroup,
+				consumer: xic.Name,
+			}); res.Err != nil {
+				log.Effect(ctx, log.LogError,
+					"xgroupdelconsumer failed",
+					watermill.LogFields{"error": err}.Add(logFields),
+				)
 			}
 		}
 	}
@@ -499,11 +500,9 @@ func (s *Subscriber) checkConsumers(ctx context.Context, stream string, wg *sync
 func (s *Subscriber) createMessageHandler(output chan *message.Message) messageHandler {
 	return messageHandler{
 		outputChannel:   output,
-		rc:              s.client,
 		consumerGroup:   s.config.ConsumerGroup,
 		unmarshaller:    s.config.Unmarshaller,
 		nackResendSleep: s.config.NackResendSleep,
-		logger:          s.logger,
 		closing:         s.closing,
 	}
 }
@@ -524,20 +523,18 @@ func (s *Subscriber) Close() error {
 		return err
 	}
 
-	s.logger.Debug("Redis stream subscriber closed", nil)
+	log.Effect(ctx, log.LogDebug, "Redis stream subscriber closed", nil)
 
 	return nil
 }
 
 type messageHandler struct {
 	outputChannel chan<- *message.Message
-	rc            redis.UniversalClient
 	consumerGroup string
 	unmarshaller  Unmarshaller
 
 	nackResendSleep time.Duration
 
-	logger  watermill.LoggerAdapter
 	closing chan struct{}
 }
 
@@ -546,7 +543,7 @@ func (h *messageHandler) processMessage(ctx context.Context, stream string, xm *
 		"xid": xm.ID,
 	})
 
-	h.logger.Trace("Received message from redis stream", receivedMsgLogFields)
+	log.Effect(ctx, log.LogTrace, "Received message from redis stream", receivedMsgLogFields)
 
 	msg, err := h.unmarshaller.Unmarshal(xm.Values)
 	if err != nil {
@@ -567,12 +564,12 @@ ResendLoop:
 	for {
 		select {
 		case h.outputChannel <- msg:
-			h.logger.Trace("Message sent to consumer", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Message sent to consumer", receivedMsgLogFields)
 		case <-h.closing:
-			h.logger.Trace("Closing, message discarded", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Closing, message discarded", receivedMsgLogFields)
 			return nil
 		case <-ctx.Done():
-			h.logger.Trace("Closing, ctx cancelled before sent to consumer", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Closing, ctx cancelled before sent to consumer", receivedMsgLogFields)
 			return nil
 		}
 
@@ -581,8 +578,13 @@ ResendLoop:
 			if h.consumerGroup != "" {
 				// deadly retry ack
 				err := retry.Retry(func(attempt uint) error {
-					err := h.rc.XAck(ctx, stream, h.consumerGroup, xm.ID).Err()
-					return err
+					res := <-dependency.Effect[_redisClient](ctx, XAckEffect{
+						ctx:    ctx,
+						stream: stream,
+						group:  h.consumerGroup,
+						ids:    []string{xm.ID},
+					})
+					return res.Err
 				}, func(attempt uint) bool {
 					if attempt != 0 {
 						time.Sleep(time.Millisecond * 100)
@@ -598,13 +600,13 @@ ResendLoop:
 					return false
 				})
 				if err != nil {
-					h.logger.Error("Message Acked fail", err, receivedMsgLogFields)
+					log.Effect(ctx, log.LogError, "Message Acked fail", watermill.LogFields{"error": err}.Add(receivedMsgLogFields))
 				}
 			}
-			h.logger.Trace("Message Acked", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Message Acked", receivedMsgLogFields)
 			break ResendLoop
 		case <-msg.Nacked():
-			h.logger.Trace("Message Nacked", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Message Nacked", receivedMsgLogFields)
 
 			// reset acks, etc.
 			msg = msg.Copy()
@@ -614,10 +616,10 @@ ResendLoop:
 
 			continue ResendLoop
 		case <-h.closing:
-			h.logger.Trace("Closing, message discarded before ack", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Closing, message discarded before ack", receivedMsgLogFields)
 			return nil
 		case <-ctx.Done():
-			h.logger.Trace("Closing, ctx cancelled before ack", receivedMsgLogFields)
+			log.Effect(ctx, log.LogTrace, "Closing, ctx cancelled before ack", receivedMsgLogFields)
 			return nil
 		}
 	}
