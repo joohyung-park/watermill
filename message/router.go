@@ -119,8 +119,7 @@ func newRouter(config RouterConfig, logger watermill.LoggerAdapter) *Router {
 
 		handlerAdded: make(chan struct{}),
 
-		middlewaresLock: &sync.RWMutex{},
-		handlersLock:    &sync.RWMutex{},
+		handlersLock: &sync.RWMutex{},
 
 		closingInProgressCh: make(chan struct{}),
 		closedCh:            make(chan struct{}),
@@ -144,8 +143,7 @@ type middleware struct {
 type Router struct {
 	config RouterConfig
 
-	middlewares     []middleware
-	middlewaresLock *sync.RWMutex
+	middlewares []middleware
 
 	plugins []RouterPlugin
 
@@ -199,8 +197,6 @@ func (r *Router) addRouterLevelMiddleware(m ...HandlerMiddleware) {
 }
 
 func (r *Router) addHandlerLevelMiddleware(handlerName string, m ...HandlerMiddleware) {
-	r.middlewaresLock.Lock()
-	defer r.middlewaresLock.Unlock()
 	for _, handlerMiddleware := range m {
 		middleware := middleware{
 			Handler:       handlerMiddleware,
@@ -453,9 +449,7 @@ func (r *Router) RunHandlers(ctx context.Context) error {
 		go func() {
 			defer cancel()
 
-			r.middlewaresLock.Lock()
 			middlewares := append([]middleware{}, r.middlewares...)
-			r.middlewaresLock.Unlock()
 
 			h.run(ctx, middlewares)
 
