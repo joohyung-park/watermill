@@ -9,6 +9,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/components/forwarder"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+	"github.com/on-the-ground/effect_ive_go/effects/concurrency"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -62,7 +63,11 @@ func (s *ForwarderSuite) TearDownTest() {
 }
 
 func (s *ForwarderSuite) TestForwarder_publish_using_decorated_publisher() {
-	fwd := s.setupForwarder(forwarder.Config{ForwarderTopic: forwarderTopic})
+	ctx := context.Background()
+	ctx, endOfConcurrency := concurrency.WithEffectHandler(ctx, 10)
+	defer endOfConcurrency()
+
+	fwd := s.setupForwarder(ctx, forwarder.Config{ForwarderTopic: forwarderTopic})
 	defer func() {
 		s.NoError(fwd.Close())
 	}()
@@ -75,8 +80,12 @@ func (s *ForwarderSuite) TestForwarder_publish_using_decorated_publisher() {
 }
 
 func (s *ForwarderSuite) TestForwarder_publish_using_non_decorated_publisher() {
+	ctx := context.Background()
+	ctx, endOfConcurrency := concurrency.WithEffectHandler(ctx, 10)
+	defer endOfConcurrency()
+
 	msgAckedDetectorMiddleware, msgAckedCh := s.setupMessageAckedDetectorMiddleware()
-	fwd := s.setupForwarder(forwarder.Config{
+	fwd := s.setupForwarder(ctx, forwarder.Config{
 		ForwarderTopic: forwarderTopic,
 		Middlewares:    []message.HandlerMiddleware{msgAckedDetectorMiddleware},
 	})
@@ -92,8 +101,12 @@ func (s *ForwarderSuite) TestForwarder_publish_using_non_decorated_publisher() {
 }
 
 func (s *ForwarderSuite) TestForwarder_publish_using_non_decorated_publisher_acking_enabled() {
+	ctx := context.Background()
+	ctx, endOfConcurrency := concurrency.WithEffectHandler(ctx, 10)
+	defer endOfConcurrency()
+
 	msgAckedDetectorMiddleware, msgAckedCh := s.setupMessageAckedDetectorMiddleware()
-	fwd := s.setupForwarder(forwarder.Config{
+	fwd := s.setupForwarder(ctx, forwarder.Config{
 		ForwarderTopic:      forwarderTopic,
 		Middlewares:         []message.HandlerMiddleware{msgAckedDetectorMiddleware},
 		AckWhenCannotUnwrap: true,
@@ -133,8 +146,8 @@ func newPubSubOut() (PubSubOutPublisher, PubSubOutSubscriber) {
 	return PubSubOutPublisher{channelPubSub}, PubSubOutSubscriber{channelPubSub}
 }
 
-func (s *ForwarderSuite) setupForwarder(config forwarder.Config) *forwarder.Forwarder {
-	f, err := forwarder.NewForwarder(s.subscriberIn, s.publisherOut, logger, config)
+func (s *ForwarderSuite) setupForwarder(ctx context.Context, config forwarder.Config) *forwarder.Forwarder {
+	f, err := forwarder.NewForwarder(ctx, s.subscriberIn, s.publisherOut, logger, config)
 	s.Require().NoError(err)
 
 	go func() {

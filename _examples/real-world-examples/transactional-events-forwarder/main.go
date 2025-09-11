@@ -15,6 +15,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/components/forwarder"
 	"github.com/ThreeDotsLabs/watermill/message"
 	driver "github.com/go-sql-driver/mysql"
+	"github.com/on-the-ground/effect_ive_go/effects/concurrency"
 )
 
 const (
@@ -55,7 +56,11 @@ func main() {
 	)
 	expectNoErr(err)
 
-	fwd, err := forwarder.NewForwarder(sqlSubscriber, gcpPublisher, logger, forwarder.Config{
+	ctx := context.Background()
+	ctx, endOfConcurrency := concurrency.WithEffectHandler(ctx, 10)
+	defer endOfConcurrency()
+
+	fwd, err := forwarder.NewForwarder(ctx, sqlSubscriber, gcpPublisher, logger, forwarder.Config{
 		ForwarderTopic: forwarderSQLTopic,
 	})
 	expectNoErr(err)

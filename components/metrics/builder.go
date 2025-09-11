@@ -35,7 +35,7 @@ type PrometheusMetricsBuilder struct {
 func (b PrometheusMetricsBuilder) AddPrometheusRouterMetrics(r *message.Router) {
 	r.AddPublisherDecorators(b.DecoratePublisher)
 	r.AddSubscriberDecorators(b.DecorateSubscriber)
-	r.AddMiddleware(b.NewRouterMiddleware().Middleware)
+	// todo r.AddMiddleware(b.NewRouterMiddleware().Middleware)
 }
 
 // DecoratePublisher wraps the underlying publisher with Prometheus metrics.

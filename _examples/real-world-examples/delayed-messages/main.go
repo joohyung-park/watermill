@@ -10,6 +10,7 @@ import (
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+	"github.com/on-the-ground/effect_ive_go/effects/concurrency"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ThreeDotsLabs/watermill"
@@ -22,6 +23,8 @@ import (
 )
 
 func main() {
+	ctx := context.Background()
+
 	rawdb, err := stdSQL.Open("postgres", "postgres://postgres:postgres@172.24.0.3:5432/watermill?sslmode=disable")
 	if err != nil {
 		panic(err)
@@ -166,7 +169,11 @@ func main() {
 		panic(err)
 	}
 
+	ctx, endOfConcurrency := concurrency.WithEffectHandler(ctx, 10)
+	defer endOfConcurrency()
+
 	_, err = forwarder.NewForwarder(
+		ctx,
 		sqlSubscriber,
 		redisPublisher,
 		logger,
