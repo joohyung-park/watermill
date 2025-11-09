@@ -726,7 +726,7 @@ func TestRouter_close_handler(t *testing.T) {
 	assert.True(t, all)
 	tests.AssertAllMessagesReceived(t, expectedReceivedMessages, receivedMessages1)
 
-	handler.Stop()
+	handler.StopForTest()
 	select {
 	case <-handler.Stopped():
 	// ok
@@ -1206,7 +1206,7 @@ func TestRouter_Handlers(t *testing.T) {
 		},
 	)
 
-	actual := r.Handlers()
+	actual := r.HandlersForTest()
 
 	assert.Len(t, actual, 1)
 
